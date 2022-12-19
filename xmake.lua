@@ -7,11 +7,11 @@ target("7zstd")
     set_warnings("all")
     if is_plat("windows") then
         add_links("libzstd_static")
-        add_includedirs("thirdparty/zstd-1.5.2/lib")
+        add_includedirs("C:/Users/sapphire/software/usr/include")
         if is_mode("debug") then
-            add_linkdirs("thirdparty/zstd-1.5.2/build/VS2010/bin/x64_Debug")
+            add_linkdirs("C:/Users/sapphire/software/usr/lib/debug")
         else
-            add_linkdirs("thirdparty/zstd-1.5.2/build/VS2010/bin/x64_Release")
+            add_linkdirs("C:/Users/sapphire/software/usr/lib/release")
         end
     else
         add_syslinks("pthread")
