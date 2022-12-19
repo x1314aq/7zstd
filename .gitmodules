@@ -1,0 +1,6 @@
+[submodule "thirdparty/zstd"]
+	path = thirdparty/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "thirdparty/mimalloc"]
+	path = thirdparty/mimalloc
+	url = https://github.com/microsoft/mimalloc.git
