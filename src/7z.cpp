@@ -63,13 +63,13 @@ bool Archive::read_header(ByteArray &arr)
 
 bool Archive::read_archive()
 {
-    bool ans;
+    bool success;
     uint8_t *buf = nullptr;
 
-    ans = read_signature();
-    if (!ans) {
+    success = read_signature();
+    if (!success) {
         fmt::print("read_signature() failed\n");
-        return ans;
+        return success;
     }
 
     fseek(_fp, _next_hdr_offset, SEEK_CUR);
@@ -79,24 +79,25 @@ bool Archive::read_archive()
         return false;
     }
 
-    ByteArray arr(buf, _next_hdr_size);
+    ByteArray arr(buf, _next_hdr_size, true);
     uint8_t t = arr.read_uint8();
 
-    switch (t) {
-        case Property::HEADER:
-            ans = read_header(arr);
-            break;
-        case Property::ENCODED_HEADER:
-            ans = read_encoded_header(arr);
-            break;
-        default:
-            fmt::print("unknown header {}\n", t);
-            ans = false;
-            break;
+    if (t == Property::ENCODED_HEADER) {
+        success = read_encoded_header(arr);
+        if (!success) {
+            fmt::print("read_encoded_header() failed\n");
+            return success;
+        }
+
+        // do something
+
+        if (arr.read_uint8() != Property::HEADER) {
+            fmt::print("unknown Property\n");
+            return false;
+        }
     }
 
-    delete[] buf;
-    return ans;
+    return read_header(arr);
 }
 
 Archive::Archive(const std::string &s, uint32_t flags) : _name(s)

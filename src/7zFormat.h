@@ -82,7 +82,15 @@ public:
 
 class ByteArray {
 public:
-    ByteArray(const uint8_t *buffer, size_t size) : _buffer(buffer), _size(size), _pos(0) {}
+    ByteArray(const uint8_t *buffer, size_t size, bool free = false) : _buffer(buffer), _size(size), _pos(0), _free(free) {}
+
+    ~ByteArray()
+    {
+        if (_free) {
+            delete[] _buffer;
+        }
+    }
+
     uint8_t read_uint8()
     {
         assert(_pos < _size);
@@ -156,6 +164,11 @@ public:
         return _buffer + _pos;
     }
 
+    size_t size()
+    {
+        return _size - _pos;
+    }
+
 private:
     uint64_t read_number_spec(size_t &processed)
     {
@@ -210,6 +223,7 @@ private:
     const uint8_t *_buffer;
     size_t _size;
     size_t _pos;
+    bool _free;
 };
 
 class Archive {
