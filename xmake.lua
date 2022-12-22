@@ -2,7 +2,8 @@ add_rules("mode.debug", "mode.release")
 
 target("7zstd")
     set_kind("binary")
-    add_files("src/*.cpp", "src/*.cc")
+    add_files("src/*.cpp", "thirdparty/fmt/*.cc", "thirdparty/lzma/*.c")
+    add_includedirs("thirdparty/fmt", "thirdparty/lzma")
     set_languages("c11", "c++14")
     set_warnings("all")
     if is_plat("windows") then
