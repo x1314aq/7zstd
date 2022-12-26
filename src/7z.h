@@ -36,53 +36,9 @@ public:
     static const uint8_t DUMMY = 0x19;
 };
 
-class CodecID {
-public:
-    static const uint64_t COPY = 0x00;
-    static const uint64_t DELTA = 0x03;
-    static const uint64_t BCJ = 0x04;
-    static const uint64_t PPC = 0x05;
-    static const uint64_t IA64 = 0x06;
-    static const uint64_t ARM = 0x07;
-    static const uint64_t ARMT = 0x08;
-    static const uint64_t SPARC = 0x09;
-    // SWAP = 02..
-    static const uint64_t SWAP2 = 0x020302;
-    static const uint64_t SWAP4 = 0x020304;
-    // 7Z = 03..
-    static const uint64_t LZMA = 0x030101;
-    static const uint64_t PPMD = 0x030401;
-    static const uint64_t P7Z_BCJ = 0x03030103;
-    static const uint64_t P7Z_BCJ2 = 0x0303011B;
-    static const uint64_t BCJ_PPC = 0x03030205;
-    static const uint64_t BCJ_IA64 = 0x03030401;
-    static const uint64_t BCJ_ARM = 0x03030501;
-    static const uint64_t BCJ_ARMT = 0x03030701;
-    static const uint64_t BCJ_SPARC = 0x03030805;
-    static const uint64_t LZMA2 = 0x21;
-    // MISC : 04..
-    static const uint64_t MISC_ZIP = 0x0401;
-    static const uint64_t MISC_BZIP2 = 0x040202;
-    static const uint64_t MISC_DEFLATE = 0x040108;
-    static const uint64_t MISC_DEFLATE64 = 0x040109;
-    static const uint64_t MISC_Z = 0x0405;
-    static const uint64_t MISC_LZH = 0x0406;
-    static const uint64_t NSIS_DEFLATE = 0x040901;
-    static const uint64_t NSIS_BZIP2 = 0x040902;
-    static const uint64_t MISC_ZSTD = 0x04f71101;
-    static const uint64_t MISC_BROTLI = 0x04f71102;
-    static const uint64_t MISC_LZ4 = 0x04f71104;
-    static const uint64_t MISC_LZS = 0x04f71105;
-    static const uint64_t MISC_LIZARD = 0x04f71106;
-    // CRYPTO 06..
-    static const uint64_t CRYPT_ZIPCRYPT = 0x06f10101;
-    static const uint64_t CRYPT_RAR29AES = 0x06f10303;
-    static const uint64_t CRYPT_AES256_SHA256 = 0x06f10701;
-};
-
 class ByteArray {
 public:
-    ByteArray(const uint8_t *buffer, size_t size, bool free = false) : _buffer(buffer), _size(size), _pos(0), _free(free) {}
+    ByteArray(const void *buffer, size_t size, bool free = false) : _buffer(reinterpret_cast<const uint8_t *>(buffer)), _size(size), _pos(0), _free(free) {}
 
     ~ByteArray()
     {
@@ -103,7 +59,7 @@ public:
             return;
         }
         assert(size < _size - _pos);
-        ::memcpy(dst, _buffer, size);
+        ::memcpy(dst, _buffer + _pos, size);
         _pos += size;
     }
 
@@ -169,6 +125,17 @@ public:
         return _size - _pos;
     }
 
+    void replace(const void *new_buffer, size_t new_size, bool free)
+    {
+        if (_free) {
+            delete[] _buffer;
+        }
+        _buffer = reinterpret_cast<const uint8_t *>(new_buffer);
+        _size = new_size;
+        _pos = 0;
+        _free = free;
+    }
+
 private:
     uint64_t read_number_spec(size_t &processed)
     {
@@ -226,6 +193,117 @@ private:
     bool _free;
 };
 
+class HashDigest {
+public:
+    HashDigest():_bitset(nullptr) {}
+    bool init(uint8_t all_defined, uint64_t number)
+    {
+        size_t sz = number / 8;
+        if (number % 8) {
+            sz++;
+        }
+        _bitset = new uint8_t[sz];
+        if (!_bitset) {
+            return false;
+        }
+
+        _all_defined = all_defined;
+        if (all_defined == 1) {
+            ::memset(_bitset, 1, sz);
+            size_t u = sz * 8 - number;
+            if (u) {
+                _bitset[sz - 1] |= ~((1U << u) - 1);
+            }
+        }
+
+        _crcs.resize(number);
+        _number = number;
+        _size = sz;
+        return true;
+    }
+
+    ~HashDigest()
+    {
+        if (_bitset) {
+            delete[] _bitset;
+        }
+    }
+
+    void set(size_t i)
+    {
+        _bitset[i / 8] |= (1U << (7 - (i % 8)));
+    }
+
+    void clear(size_t i)
+    {
+        _bitset[i / 8] &= ~(1U << (7 - (i % 8)));
+    }
+
+    bool test(size_t i)
+    {
+        return (_bitset[i / 8] & (1U << (7 - (i % 8)))) != 0;
+    }
+
+    uint8_t _all_defined;
+    uint64_t _number;
+    size_t _size;
+    uint8_t *_bitset;
+    std::vector<uint32_t> _crcs;
+};
+
+class Coder {
+public:
+    uint8_t _flag;
+    uint8_t _id[16];
+    uint64_t _num_in_streams;
+    uint64_t _num_out_streams;
+    uint64_t _property_size;
+    uint8_t *_property;
+
+    size_t id_size()
+    {
+        return (size_t)(_flag & 0x7);
+    }
+
+    bool is_complex_codec()
+    {
+        return _flag & 0x8;
+    }
+
+    bool has_attributes()
+    {
+        return _flag & 10;
+    }
+
+    bool is_lzma()
+    {
+        const uint8_t lzma_id[] = {0x3, 0x1, 0x1};
+        return ::memcmp(_id, lzma_id, id_size()) == 0;
+    }
+
+    bool is_lzma2()
+    {
+        const uint8_t lzma_id[] = {0x21};
+        return ::memcmp(_id, lzma_id, id_size()) == 0;
+    }
+
+    bool is_zstd()
+    {
+        const uint8_t zstd_id[] = {0x04, 0xf7, 0x11, 0x01};
+        return ::memcmp(_id, zstd_id, id_size()) == 0;
+    }
+};
+
+class Folder {
+public:
+    std::vector<Coder> _coders;
+    uint32_t _num_in_streams_total;
+    uint32_t _num_out_streams_total;
+    std::vector<std::pair<uint64_t, uint64_t>> _bind_pairs;
+    std::vector<uint64_t> _packed_streams_index;
+    std::vector<uint64_t> _unpack_size;
+};
+
 class Archive {
 public:
     constexpr static uint32_t F_READ = 0x0;
@@ -254,11 +332,15 @@ private:
     bool read_encoded_header(ByteArray &obj);
     bool read_pack_info(ByteArray &obj);
     bool read_unpack_info(ByteArray &obj);
+    bool read_hash_digest(ByteArray &obj, uint64_t number, HashDigest &digest);
+    bool read_substreams_info(ByteArray &obj);
     bool read_archive();
+    uint8_t *decompress_header();
+
+    void write_decompressed_header(uint8_t *buf, size_t buf_len);
 
     // common member
     std::string _name;
-    long _fpos;
     FILE *_fp;
 
     // signature header
@@ -266,6 +348,15 @@ private:
     uint64_t _next_hdr_offset;
     uint64_t _next_hdr_size;
     uint32_t _next_hdr_crc;
+
+    // pack info
+    uint64_t _pack_pos;
+    std::vector<uint64_t> _pack_size;
+    HashDigest _pack_digest;
+
+    // unpack info
+    std::vector<Folder> _folders;
+    HashDigest _unpack_digest;
 };
 
 };
