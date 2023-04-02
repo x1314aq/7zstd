@@ -230,10 +230,12 @@ bool Archive::read_header(ByteArray &arr)
 
 void Archive::write_decompressed_header(uint8_t *buf, size_t buf_len)
 {
-    std::string new_name = std::string("decompress-") + _name;
+    auto const pos = _name.find_last_of("/\\") + 1;
+    std::string basename = _name.substr(pos);
+    std::string new_name = std::string("decompress-") + basename;
     FILE *new_fp = fopen(new_name.c_str(), "wb+");
     if (!new_fp) {
-        fmt::print("fopen() failed\n");
+        fmt::print("fopen({}, 'wb+') failed errno {}\n", new_name, errno);
         return;
     }
 
