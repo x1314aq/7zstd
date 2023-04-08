@@ -196,6 +196,7 @@ private:
 class HashDigest {
 public:
     HashDigest():_bitset(nullptr) {}
+
     bool init(uint8_t all_defined, uint64_t number)
     {
         size_t sz = number / 8;
@@ -244,6 +245,18 @@ public:
         return (_bitset[i / 8] & (1U << (7 - (i % 8)))) != 0;
     }
 
+    void reset()
+    {
+        if (_bitset) {
+            delete[] _bitset;
+        }
+
+        _all_defined = 0;
+        _number = 0;
+        _size = 0;
+        _crcs.clear();
+    }
+
     uint8_t _all_defined;
     uint64_t _number;
     size_t _size;
@@ -260,19 +273,36 @@ public:
     uint64_t _property_size;
     uint8_t *_property;
 
+    Coder():_property(nullptr)
+    {
+        ::memset(_id, 0, sizeof(_id));
+    }
+
+    ~Coder()
+    {
+        if (_property) {
+            delete _property;
+        }
+    }
+
     size_t id_size()
     {
-        return (size_t)(_flag & 0x7);
+        return (size_t)(_flag & 0xF);
     }
 
     bool is_complex_codec()
     {
-        return _flag & 0x8;
+        return _flag & 0x10;
     }
 
     bool has_attributes()
     {
-        return _flag & 10;
+        return _flag & 0x20;
+    }
+
+    bool is_not_last_method()
+    {
+        return _flag & 0x80;
     }
 
     bool is_lzma()
@@ -329,13 +359,32 @@ private:
     bool write_signature();
     bool read_signature();
     bool read_header(ByteArray &obj);
-    bool read_encoded_header(ByteArray &obj);
     bool read_pack_info(ByteArray &obj);
-    bool read_unpack_info(ByteArray &obj);
+    bool read_coders_info(ByteArray &obj);
     bool read_hash_digest(ByteArray &obj, uint64_t number, HashDigest &digest);
-    bool read_substreams_info(ByteArray &obj);
+    bool read_sub_streams_info(ByteArray &obj);
+    bool read_streams_info(ByteArray& obj);
+    bool read_files_info(ByteArray& obj);
     bool read_archive();
+
+    bool read_encoded_header(ByteArray& obj)
+    {
+        return read_streams_info(obj);
+    }
+
+    bool read_main_streams_info(ByteArray& obj)
+    {
+        return read_streams_info(obj);
+    }
+
+    bool read_additional_streams_info(ByteArray& obj)
+    {
+        return read_streams_info(obj);
+    }
+
     uint8_t *decompress_header();
+
+    void reset();
 
     void write_decompressed_header(uint8_t *buf, size_t buf_len);
 

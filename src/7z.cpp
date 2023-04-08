@@ -105,11 +105,10 @@ bool Archive::read_pack_info(ByteArray &arr)
     }
 
     assert(t == Property::END);
-
     return true;
 }
 
-bool Archive::read_unpack_info(ByteArray &arr)
+bool Archive::read_coders_info(ByteArray &arr)
 {
     uint64_t t = arr.read_number();
     if (t != Property::FOLDER) {
@@ -145,6 +144,7 @@ bool Archive::read_unpack_info(ByteArray &arr)
             if (c.has_attributes()) {
                 c._property_size = arr.read_number();
                 c._property = new uint8_t[c._property_size];
+                // TODO implement memory allocator for small chunk (<32 bytes)
                 if (!c._property) {
                     return false;
                 }
@@ -185,12 +185,17 @@ bool Archive::read_unpack_info(ByteArray &arr)
     return true;
 }
 
-bool Archive::read_substreams_info(ByteArray &arr)
+bool Archive::read_sub_streams_info(ByteArray &arr)
 {
     return true;
 }
 
-bool Archive::read_encoded_header(ByteArray &arr)
+bool Archive::read_files_info(ByteArray& arr)
+{
+    return true;
+}
+
+bool Archive::read_streams_info(ByteArray &arr)
 {
     uint64_t t = arr.read_number();
 
@@ -203,7 +208,7 @@ bool Archive::read_encoded_header(ByteArray &arr)
     }
 
     if (t == Property::UNPACK_INFO) {
-        if (!read_unpack_info(arr)) {
+        if (!read_coders_info(arr)) {
             fmt::print("read_unpack_info() failed\n");
             return false;
         }
@@ -211,12 +216,11 @@ bool Archive::read_encoded_header(ByteArray &arr)
     }
 
     if (t == Property::SUBSTREAMS_INFO) {
-        if (!read_substreams_info(arr)) {
+        if (!read_sub_streams_info(arr)) {
             fmt::print("read_substreams_info() failed\n");
+            return false;
         }
         t = arr.read_number();
-    } else {
-
     }
 
     assert(t == Property::END);
@@ -225,6 +229,32 @@ bool Archive::read_encoded_header(ByteArray &arr)
 
 bool Archive::read_header(ByteArray &arr)
 {
+    uint64_t t = arr.read_number();
+
+    if (t == Property::ADDITIONAL_STREAMS_INFO) {
+        if (!read_additional_streams_info(arr)) {
+            fmt::print("read_additional_streams_info() failed\n");
+            return false;
+        }
+        t = arr.read_number();
+    }
+
+    if (t == Property::MAIN_STREAMS_INFO) {
+        if (!read_main_streams_info(arr)) {
+            fmt::print("read_main_streams_info() failed\n");
+            return false;
+        }
+        t = arr.read_number();
+    }
+
+    if (t == Property::FILES_INFO) {
+        if (!read_files_info(arr)) {
+            fmt::print("read_files_info() failed\n");
+            return false;
+        }
+    }
+
+    assert(t == Property::END);
     return true;
 }
 
@@ -317,6 +347,7 @@ uint8_t * Archive::decompress_header()
     uint8_t *src = new uint8_t[src_len];
     if (!src) {
         delete[] dest;
+        fmt::print("malloc() failed\n");
         return nullptr;
     }
 
@@ -348,6 +379,16 @@ uint8_t * Archive::decompress_header()
 
     delete[] src;
     return dest;
+}
+
+void Archive::reset()
+{
+    _pack_pos = 0;
+    _pack_size.clear();
+    _pack_digest.reset();
+
+    _folders.clear();
+    _unpack_digest.reset();
 }
 
 bool Archive::read_archive()
@@ -396,6 +437,8 @@ bool Archive::read_archive()
             fmt::print("unknown Property\n");
             return false;
         }
+
+        reset();
     }
 
     return read_header(arr);
