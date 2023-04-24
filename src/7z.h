@@ -193,9 +193,71 @@ private:
     bool _free;
 };
 
-class HashDigest {
+class Bitmap {
 public:
-    HashDigest():_bitset(nullptr) {}
+    Bitmap() : _bitset(nullptr) {};
+
+    Bitmap(uint64_t number)
+    {
+        init(number);
+    };
+
+    ~Bitmap()
+    {
+        if (_bitset) {
+            delete[] _bitset;
+        }
+    }
+
+    bool init(uint64_t number)
+    {
+        size_t sz = number / 8;
+        if (number % 8) {
+            sz++;
+        }
+        _bitset = new uint8_t[sz];
+        if (!_bitset) {
+            return false;
+        }
+
+        _number = number;
+        _size = sz;
+        return true;
+    }
+
+    void set(size_t i)
+    {
+        _bitset[i / 8] |= (1U << (7 - (i % 8)));
+    }
+
+    void clear(size_t i)
+    {
+        _bitset[i / 8] &= ~(1U << (7 - (i % 8)));
+    }
+
+    bool test(size_t i)
+    {
+        return (_bitset[i / 8] & (1U << (7 - (i % 8)))) != 0;
+    }
+
+    void reset()
+    {
+        if (_bitset) {
+            delete[] _bitset;
+        }
+
+        _number = 0;
+        _size = 0;
+    }
+
+    uint64_t _number;
+    size_t _size;
+    uint8_t* _bitset;
+};
+
+class BitmapDigest {
+public:
+    BitmapDigest():_bitset(nullptr) {}
 
     bool init(uint8_t all_defined, uint64_t number)
     {
@@ -210,7 +272,7 @@ public:
 
         _all_defined = all_defined;
         if (all_defined == 1) {
-            ::memset(_bitset, 1, sz);
+            ::memset(_bitset, 0xFF, sz);
             size_t u = sz * 8 - number;
             if (u) {
                 _bitset[sz - 1] |= ~((1U << u) - 1);
@@ -223,7 +285,7 @@ public:
         return true;
     }
 
-    ~HashDigest()
+    ~BitmapDigest()
     {
         if (_bitset) {
             delete[] _bitset;
@@ -334,6 +396,44 @@ public:
     std::vector<uint64_t> _unpack_size;
 };
 
+class FileInfo {
+public:
+#ifdef _WIN32
+    std::wstring _name;
+#else
+    std::vector<uint16_t> _name;
+#endif
+    uint64_t _mtime;
+    uint64_t _ctime;
+    uint64_t _atime;
+    uint32_t _attribute;
+    bool _empty_stream;
+
+    FileInfo() :_empty_stream(false) {};
+
+    std::string to_utf8();
+
+    bool is_readonly()
+    {
+        return (_attribute & 0x1) != 0;
+    }
+
+    bool is_hidden()
+    {
+        return (_attribute & 0x2) != 0;
+    }
+
+    bool is_directory()
+    {
+        return (_attribute & 0x10) != 0;
+    }
+
+    bool is_archive()
+    {
+        return (_attribute & 0x20) != 0;
+    }
+};
+
 class Archive {
 public:
     constexpr static uint32_t F_READ = 0x0;
@@ -361,7 +461,7 @@ private:
     bool read_header(ByteArray &obj);
     bool read_pack_info(ByteArray &obj);
     bool read_coders_info(ByteArray &obj);
-    bool read_hash_digest(ByteArray &obj, uint64_t number, HashDigest &digest);
+    bool read_bitmap_digest(ByteArray &obj, uint64_t number, BitmapDigest &digest);
     bool read_sub_streams_info(ByteArray &obj);
     bool read_streams_info(ByteArray& obj);
     bool read_files_info(ByteArray& obj);
@@ -401,11 +501,20 @@ private:
     // pack info
     uint64_t _pack_pos;
     std::vector<uint64_t> _pack_size;
-    HashDigest _pack_digest;
+    BitmapDigest _pack_digest;
 
-    // unpack info
+    // coder info
     std::vector<Folder> _folders;
-    HashDigest _unpack_digest;
+    BitmapDigest _unpack_digest;
+
+    // substreams info
+    std::vector<uint32_t> _num_unpack_streams;
+    std::vector<std::vector<uint32_t>> _substream_sizes;
+    BitmapDigest _substreams_digest;
+
+    // files info
+    std::vector<FileInfo> _files_info;
+    Bitmap _empty_files;
 };
 
 };

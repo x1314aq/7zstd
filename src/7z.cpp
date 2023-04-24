@@ -58,7 +58,7 @@ void Archive::DumpArchive()
     fmt::print("NextHeaderCRC: {:#x}\n", _next_hdr_crc);
 }
 
-bool Archive::read_hash_digest(ByteArray &arr, uint64_t number, HashDigest &digest)
+bool Archive::read_bitmap_digest(ByteArray &arr, uint64_t number, BitmapDigest &digest)
 {
     uint8_t all_defined = arr.read_uint8();
     if (!digest.init(all_defined, number)) {
@@ -100,7 +100,7 @@ bool Archive::read_pack_info(ByteArray &arr)
 
     t = arr.read_number();
     if (t == Property::CRC) {
-        read_hash_digest(arr, num_pack_streams, _pack_digest);
+        read_bitmap_digest(arr, num_pack_streams, _pack_digest);
         t = arr.read_number();
     }
 
@@ -177,7 +177,7 @@ bool Archive::read_coders_info(ByteArray &arr)
     }
 
     if (t == Property::CRC) {
-        read_hash_digest(arr, num_folder, _unpack_digest);
+        read_bitmap_digest(arr, num_folder, _unpack_digest);
         t = arr.read_number();
     }
 
@@ -187,11 +187,106 @@ bool Archive::read_coders_info(ByteArray &arr)
 
 bool Archive::read_sub_streams_info(ByteArray &arr)
 {
+    uint64_t t = arr.read_uint8();
+    size_t num_folds = _folders.size();
+    uint32_t num_digests = 0;
+
+    _num_unpack_streams.resize(num_folds);
+    _substream_sizes.resize(num_folds);
+
+    if (t == Property::NUM_UNPACK_STREAM) {
+        for (size_t i = 0; i < num_folds; i++) {
+            _num_unpack_streams[i] = arr.read_number();
+            num_digests += _num_unpack_streams[i];
+        }
+        t = arr.read_uint8();
+    }
+
+    if (t == Property::SIZE) {
+        for (size_t i = 0; i < num_folds; i++) {
+            size_t num = _num_unpack_streams[i];
+            uint32_t total_size = 0;
+            auto& v = _substream_sizes[i];
+
+            v.resize(num);
+            for (size_t j = 0; j < num - 1; j++) {
+                v[j] = arr.read_number();
+                total_size += v[j];
+            }
+
+            assert(_folders[i]._unpack_size.back() > total_size);
+            v[num - 1] = _folders[i]._unpack_size.back() - total_size;
+        }
+        t = arr.read_uint8();
+    }
+
+    if (t == Property::CRC) {
+        if (!read_bitmap_digest(arr, num_digests, _substreams_digest)) {
+            fmt::print("read_hash_digest() failed\n");
+            return false;
+        }
+        t = arr.read_uint8();
+    }
+
+    assert(t == Property::END);
     return true;
 }
 
 bool Archive::read_files_info(ByteArray& arr)
 {
+    uint64_t num_files = arr.read_number();
+    _files_info.resize(num_files);
+    uint64_t num_empty_streams = 0;
+
+    while (true) {
+        uint8_t t = arr.read_uint8();
+        if (t == Property::END) {
+            break;
+        }
+
+        uint64_t size = arr.read_number();
+        Bitmap bm;
+
+        switch (t) {
+        case Property::DUMMY:
+            arr.skip_data(size);
+            break;
+        case Property::EMPTY_STREAM:
+            if (!bm.init(num_files)) {
+                fmt::print("BitmapDigest.init() failed\n");
+                return false;
+            }
+            arr.read_bytes(bm._bitset, size);
+            for (uint64_t i = 0; i < num_files; i++) {
+                if (bm.test(i)) {
+                    _files_info[i]._empty_stream = true;
+                    num_empty_streams++;
+                }
+            }
+            break;
+        case Property::EMPTY_FILE:
+            if (!_empty_files.init(num_empty_streams)) {
+                fmt::print("BitmapDigest.init() failed\n");
+                return false;
+            }
+            arr.read_bytes(_empty_files._bitset, size);
+            break;
+        case Property::ANTI:
+            fmt::print("Not Support PROPERTY::ANTI\n");
+            break;
+        case Property::NAME:
+            break;
+        case Property::CREATION_TIME:
+        case Property::LAST_ACCESS_TIME:
+        case Property::LAST_WRITE_TIME:
+            break;
+        case Property::ATTRIBUTES:
+            break;
+        default:
+            fmt::print("unknown property {}\n", t);
+            break;
+        }
+    }
     return true;
 }
 
