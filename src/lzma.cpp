@@ -1,5 +1,6 @@
 #include "method.h"
 #include "LzmaDec.h"
+#include "Lzma2Dec.h"
 
 namespace IMethod {
 static void *my_alloc(ISzAllocPtr _p, size_t size)
@@ -22,6 +23,14 @@ int lzma_decompress(unsigned char *dest, size_t *destLen,
 {
     ELzmaStatus status;
     return LzmaDecode(dest, destLen, src, srcLen, props, (unsigned)propsSize, LZMA_FINISH_ANY, &status, &g_alloc);
+}
+
+int lzma2_decompress(unsigned char *dest, size_t *destLen,
+                     const unsigned char *src, size_t *srcLen,
+                     unsigned char prop)
+{
+    ELzmaStatus status;
+    return Lzma2Decode(dest, destLen, src, srcLen, prop, LZMA_FINISH_ANY, &status, &g_alloc);
 }
 
 };

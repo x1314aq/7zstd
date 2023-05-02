@@ -11,4 +11,9 @@ namespace IMethod {
     int lzma_decompress(unsigned char *dest, size_t *destLen,
                         const unsigned char *src, size_t *srcLen,
                         const unsigned char *props, size_t propsSize);
+
+    // LZMA2
+    int lzma2_decompress(unsigned char *dest, size_t *destLen,
+                         const unsigned char *src, size_t *srcLen,
+                         unsigned char prop);
 };
