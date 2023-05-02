@@ -1,6 +1,8 @@
 #include "method.h"
 #include "LzmaDec.h"
 #include "Lzma2Dec.h"
+#include "Bcj2.h"
+#include "Bra.h"
 
 namespace IMethod {
 static void *my_alloc(ISzAllocPtr _p, size_t size)
@@ -31,6 +33,13 @@ int lzma2_decompress(unsigned char *dest, size_t *destLen,
 {
     ELzmaStatus status;
     return Lzma2Decode(dest, destLen, src, srcLen, prop, LZMA_FINISH_ANY, &status, &g_alloc);
+}
+
+size_t bcj_decode(unsigned char *data, size_t size)
+{
+    uint32_t state;
+    x86_Convert_Init(state);
+    return x86_Convert(data, size, 0, &state, 0);
 }
 
 };

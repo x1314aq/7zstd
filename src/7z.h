@@ -433,6 +433,18 @@ public:
         const uint8_t zstd_id[] = {0x04, 0xf7, 0x11, 0x01};
         return ::memcmp(_id, zstd_id, id_size()) == 0;
     }
+
+    bool is_bcj()
+    {
+        const uint8_t bcj_id[] = {0x03, 0x03, 0x01, 0x03};
+        return ::memcmp(_id, bcj_id, id_size()) == 0 && _num_in_streams == 1;
+    }
+
+    bool is_bcj2()
+    {
+        const uint8_t bcj2_id[] = {0x03, 0x03, 0x01, 0x1b};
+        return ::memcmp(_id, bcj2_id, id_size()) == 0 && _num_in_streams == 4;
+    }
 };
 
 class Folder {
