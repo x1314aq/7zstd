@@ -16,4 +16,7 @@ namespace IMethod {
     int lzma2_decompress(unsigned char *dest, size_t *destLen,
                          const unsigned char *src, size_t *srcLen,
                          unsigned char prop);
+
+    // BCJ
+    size_t bcj_decode(unsigned char *data, size_t size);
 };

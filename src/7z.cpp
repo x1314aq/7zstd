@@ -20,22 +20,114 @@ static bool is_valid(uint8_t *buf)
     return ::memcmp(buf, MAGIC_AND_VERSION, 8) == 0;
 }
 
-void Archive::ExtractAll()
-{
-
-}
-
-bool Archive::ExtractFile(uint32_t index)
-{
-    return false;
-}
-
 static std::string utf16_to_utf8(wchar_t *in)
 {
     int size = WideCharToMultiByte(CP_UTF8, 0, in, -1, NULL, 0, NULL, NULL);
     std::string out(size, 0);
     WideCharToMultiByte(CP_UTF8, 0, in, -1, &out[0], size, NULL, NULL);
     return out;
+}
+
+static bool process_empty_stream(const FileInfo &info)
+{
+    wchar_t *name = (wchar_t *)info._name.data();
+
+    if (info.is_directory()) {
+        if (CreateDirectoryW(name, nullptr) == FALSE) {
+            fmt::print("CreateDirectoryW() failed {}\n", GetLastError());
+            return false;
+        }
+    } else {
+        HANDLE h = CreateFileW(name, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, info._attribute, NULL);
+        if (h == INVALID_HANDLE_VALUE) {
+            fmt::print("CreateFileW() failed {}\n", GetLastError());
+            return false;
+        }
+        CloseHandle(h);
+    }
+
+    return true;
+}
+
+static bool write_file(const FileInfo &info, const uint8_t *buffer)
+{
+    uint32_t crc = crc32(buffer, info._size);
+    assert(info._crc == crc);
+
+    wchar_t *name = (wchar_t *)info._name.data();
+    fmt::print(L"- {}\n", name);
+    HANDLE h = CreateFileW(name, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, info._attribute, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        fmt::print("CreateFileW() failed {}\n", GetLastError());
+        return false;
+    }
+
+    DWORD written = 0;
+    DWORD size = info._size;
+    while (written < size) {
+        DWORD curr = 0;
+        if (WriteFile(h, buffer + written, size - written, &curr, nullptr) == FALSE) {
+            fmt::print("WirteFile() failed {}\n", GetLastError());
+            CloseHandle(h);
+            return false;
+        }
+        written += curr;
+    }
+    CloseHandle(h);
+
+    return true;
+}
+
+void Archive::ExtractAll()
+{
+    auto it = _files_info.cbegin();
+
+    while (it->is_empty_stream()) {
+        if (!process_empty_stream(*it)) {
+            fmt::print("process_empty_stream() failed\n");
+        }
+        ++it;
+    }
+
+    for (auto f = _folders.begin(); f != _folders.end(); ++f) {
+        size_t unpack_size = f->get_unpack_size();
+        size_t in_size = _pack_size[f->_start_packed_stream_index];
+        auto in = std::make_unique<uint8_t[]>(in_size);
+        off_t offset = SIGNATURE_HEADER_SIZE + _pack_pos;
+        for (uint32_t i = 0; i < _pack_size.size(); i++) {
+            if (i == f->_start_packed_stream_index) {
+                break;
+            }
+            offset += _pack_size[i];
+        }
+
+        fseek(_fp, offset, SEEK_SET);
+        fread(in.get(), in_size, 1, _fp);
+
+        auto out = std::make_unique<uint8_t[]>(unpack_size);
+        if (!f->decompress(in.get(), in_size, out.get(), unpack_size)) {
+            fmt::print("decompress folder failed\n");
+            return;
+        }
+
+        size_t used = 0;
+        while (used < unpack_size) {
+            const uint8_t *p = out.get() + used;
+            if (!write_file(*it, p)) {
+                fmt::print("write_file() failed\n");
+                return;
+            }
+            used += it->_size;
+            ++it;
+        }
+    }
+
+    assert(it == _files_info.cend());
+}
+
+bool Archive::ExtractFile(uint32_t index)
+{
+    return false;
 }
 
 void Archive::ListFiles()
@@ -48,11 +140,11 @@ void Archive::ListFiles()
             ui.QuadPart = it->_mtime;
             FILETIME ft{ui.u.LowPart, ui.u.HighPart}, local_ft;
             SYSTEMTIME st;
-            if (FileTimeToLocalFileTime(&ft, &local_ft) == 0) {
+            if (FileTimeToLocalFileTime(&ft, &local_ft) == FALSE) {
                 fmt::print("Failed to convert FILETIME to local FILETIME\n");
                 return;
             }
-            if (FileTimeToSystemTime(&local_ft, &st) == 0) {
+            if (FileTimeToSystemTime(&local_ft, &st) == FALSE) {
                 fmt::print("Failed to convert FILETIME {} to SYSTEMTIME\n", it->_mtime);
                 return;
             }
@@ -827,6 +919,73 @@ Archive::Archive(const std::string &s, uint32_t flags) : _name(s), _fp(nullptr),
 Archive::~Archive()
 {
     fclose(_fp);
+}
+
+bool Folder::decompress(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size)
+{
+    uint32_t num_coders = _coders.size();
+    const uint8_t *curr_in = in;
+    size_t curr_in_size = in_size;
+    uint8_t *curr_out = nullptr;
+    std::vector<uint8_t *> v;
+    bool err = true;
+
+    for (uint32_t i = 0; i < num_coders; i++) {
+        auto &c = _coders[i];
+        size_t curr_out_size;
+        if (i == num_coders - 1) {
+            curr_out_size = out_size;
+            curr_out = out;
+        } else {
+            curr_out_size = c._unpack_size;
+            curr_out = new uint8_t[curr_out_size];
+            if (!curr_out) {
+                fmt::print("alloc failed with {}\n", curr_out_size);
+                err = false;
+                break;
+            }
+            v.push_back(curr_out);
+        }
+
+        if (c.is_lzma()) {
+            int err = IMethod::lzma_decompress(curr_out, &curr_out_size, curr_in, &curr_in_size, c._property, c._property_size);
+            if (err) {
+                fmt::print("lzma_decompress() failed\n");
+                err = false;
+                break;
+            }
+        } else if (c.is_lzma2()) {
+            int err = IMethod::lzma2_decompress(curr_out, &curr_out_size, curr_in, &curr_in_size, c._property[0]);
+            if (err) {
+                fmt::print("lzma2_decompress() failed\n");
+                err = false;
+                break;
+            }
+        } else if (c.is_zstd()) {
+            int err = IMethod::zstd_decompress(curr_out, curr_out_size, curr_in, curr_in_size);
+            if (err) {
+                fmt::print("zstd_decompress() failed\n");
+                err = false;
+                break;
+            }
+        } else if (c.is_bcj()) {
+            assert(curr_in_size == curr_out_size);
+            ::memcpy(curr_out, curr_in, curr_in_size);
+            IMethod::bcj_decode(curr_out, curr_out_size);
+        } else {
+            fmt::print("Unsupported coder\n");
+            err = false;
+            break;
+        }
+
+        curr_in_size = curr_out_size;
+        curr_in = curr_out;
+    }
+
+    for (auto p : v) {
+        delete[] p;
+    }
+    return err;
 }
 
 }

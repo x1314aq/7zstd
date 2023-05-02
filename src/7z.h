@@ -396,51 +396,51 @@ public:
         }
     }
 
-    size_t id_size()
+    size_t id_size() const
     {
         return (size_t)(_flag & 0xF);
     }
 
-    bool is_complex_codec()
+    bool is_complex_codec() const
     {
         return _flag & 0x10;
     }
 
-    bool has_attributes()
+    bool has_attributes() const
     {
         return _flag & 0x20;
     }
 
-    bool is_not_last_method()
+    bool is_not_last_method() const
     {
         return _flag & 0x80;
     }
 
-    bool is_lzma()
+    bool is_lzma() const
     {
         const uint8_t lzma_id[] = {0x3, 0x1, 0x1};
         return ::memcmp(_id, lzma_id, id_size()) == 0;
     }
 
-    bool is_lzma2()
+    bool is_lzma2() const
     {
         const uint8_t lzma_id[] = {0x21};
         return ::memcmp(_id, lzma_id, id_size()) == 0;
     }
 
-    bool is_zstd()
+    bool is_zstd() const
     {
         const uint8_t zstd_id[] = {0x04, 0xf7, 0x11, 0x01};
         return ::memcmp(_id, zstd_id, id_size()) == 0;
     }
 
-    bool is_bcj()
+    bool is_bcj() const
     {
         const uint8_t bcj_id[] = {0x03, 0x03, 0x01, 0x03};
         return ::memcmp(_id, bcj_id, id_size()) == 0 && _num_in_streams == 1;
     }
 
-    bool is_bcj2()
+    bool is_bcj2() const
     {
         const uint8_t bcj2_id[] = {0x03, 0x03, 0x01, 0x1b};
         return ::memcmp(_id, bcj2_id, id_size()) == 0 && _num_in_streams == 4;
@@ -462,6 +462,8 @@ public:
     {
         return _coders.back()._unpack_size;
     }
+
+    bool decompress(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size);
 };
 
 class FileInfo {

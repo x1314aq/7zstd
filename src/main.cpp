@@ -29,7 +29,9 @@ int main(int argc, char** argv)
     } else if (strcmp(argv[1], "-x") == 0) {
         arc.ExtractAll();
     } else if (strcmp(argv[1], "-e") == 0) {
-        arc.ExtractFile(0);
+        fmt::print("Unsupport now\n");
+        return -1;
+        // arc.ExtractFile(0);
     } else {
         fmt::print("Unknown command {}\n", argv[1]);
         return -1;
