@@ -4,20 +4,82 @@
 #include "fmt/core.h"
 #include "fmt/os.h"
 #include "fmt/format.h"
+#include "fmt/xchar.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace I7Zip {
 
 constexpr static uint8_t MAGIC_AND_VERSION[8] = {'7', 'z', 0xbc, 0xaf, 0x27, 0x1c, 0x0, 0x4};
 constexpr static uint32_t SIGNATURE_HEADER_SIZE = 32;
 
-static uint32_t calc_crc(void *buf, size_t size)
-{
-    return 0;
-}
-
 static bool is_valid(uint8_t *buf)
 {
     return ::memcmp(buf, MAGIC_AND_VERSION, 8) == 0;
+}
+
+void Archive::ExtractAll()
+{
+
+}
+
+bool Archive::ExtractFile(uint32_t index)
+{
+    return false;
+}
+
+static std::string utf16_to_utf8(wchar_t *in)
+{
+    int size = WideCharToMultiByte(CP_UTF8, 0, in, -1, NULL, 0, NULL, NULL);
+    std::string out(size, 0);
+    WideCharToMultiByte(CP_UTF8, 0, in, -1, &out[0], size, NULL, NULL);
+    return out;
+}
+
+void Archive::ListFiles()
+{
+    fmt::print("{:<20} {:<10} {:<15} {:<10} File Name\n", "Last Write Time", "Attributes", "File Size", "CRC");
+    auto s = fmt::memory_buffer();
+    for (auto it = _files_info.cbegin(); it != _files_info.cend(); ++it) {
+        if (it->has_mtime()) {
+            ULARGE_INTEGER ui;
+            ui.QuadPart = it->_mtime;
+            FILETIME ft{ui.u.LowPart, ui.u.HighPart}, local_ft;
+            SYSTEMTIME st;
+            if (FileTimeToLocalFileTime(&ft, &local_ft) == 0) {
+                fmt::print("Failed to convert FILETIME to local FILETIME\n");
+                return;
+            }
+            if (FileTimeToSystemTime(&local_ft, &st) == 0) {
+                fmt::print("Failed to convert FILETIME {} to SYSTEMTIME\n", it->_mtime);
+                return;
+            }
+            fmt::format_to(std::back_inserter(s), "{}-{:02}-{:02} {:02}:{:02}:{:02}  ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        }
+        if (it->has_attribute()) {
+            char a[6];
+            a[0] = (char)(it->is_directory() ? 'D' : '.');
+            a[1] = (char)(it->is_readonly() ? 'R' : '.');
+            a[2] = (char)(it->is_hidden() ? 'H' : '.');
+            a[3] = (char)(it->is_system() ? 'S' : '.');
+            a[4] = (char)(it->is_archive() ? 'A' : '.');
+            a[5] = 0;
+            fmt::format_to(std::back_inserter(s), "{:<10} ", a);
+        }
+        fmt::format_to(std::back_inserter(s), "{:<15} {:0<#10x} {}", it->_size, it->_crc, utf16_to_utf8((wchar_t *)it->_name.data()));
+        if (it->is_directory()) {
+            s.push_back('/');
+        }
+        s.push_back('\n');
+    }
+    fmt::print("{}\n", fmt::to_string(s));
+}
+
+void Archive::TestArchive()
+{
+
 }
 
 bool Archive::write_signature()
@@ -45,20 +107,7 @@ bool Archive::read_signature()
     return sz == 24;
 }
 
-void Archive::DumpArchive()
-{
-    if (!read_archive()) {
-        fmt::print("read_archive() failed");
-        return;
-    }
-
-    fmt::print("StartHeaderCRC: {:#x}\n", _start_hdr_crc);
-    fmt::print("NextHeaderOffset: {:#x}\n", _next_hdr_offset);
-    fmt::print("NextHeaderSize: {:#x}\n", _next_hdr_size);
-    fmt::print("NextHeaderCRC: {:#x}\n", _next_hdr_crc);
-}
-
-bool Archive::read_bitmap_digest(ByteArray &arr, uint64_t number, BitmapDigest &digest)
+bool Archive::read_bitmap_digest(ByteArray &arr, uint32_t number, BitmapDigest &digest)
 {
     uint8_t all_defined = arr.read_uint8();
     if (!digest.init(all_defined, number)) {
@@ -70,7 +119,7 @@ bool Archive::read_bitmap_digest(ByteArray &arr, uint64_t number, BitmapDigest &
         arr.read_bytes(digest._bitset, digest._size);
     }
 
-    for (uint64_t i = 0; i < number; i++) {
+    for (uint32_t i = 0; i < number; i++) {
         if (digest.test(i)) {
             uint32_t crc = arr.read_uint32();
             digest._crcs[i] = crc;
@@ -85,9 +134,9 @@ bool Archive::read_pack_info(ByteArray &arr)
     uint64_t num_pack_streams = arr.read_number();
     _pack_size.resize(num_pack_streams);
 
-    uint64_t t;
+    uint8_t t;
     while (true) {
-        t = arr.read_number();
+        t = arr.read_uint8();
         if (t == Property::SIZE) {
             break;
         }
@@ -98,10 +147,10 @@ bool Archive::read_pack_info(ByteArray &arr)
         _pack_size[i] = arr.read_number();
     }
 
-    t = arr.read_number();
+    t = arr.read_uint8();
     if (t == Property::CRC) {
         read_bitmap_digest(arr, num_pack_streams, _pack_digest);
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     assert(t == Property::END);
@@ -110,22 +159,27 @@ bool Archive::read_pack_info(ByteArray &arr)
 
 bool Archive::read_coders_info(ByteArray &arr)
 {
-    uint64_t t = arr.read_number();
+    uint8_t t = arr.read_uint8();
     if (t != Property::FOLDER) {
         return false;
     }
 
-    uint64_t num_folder = arr.read_number();
+    uint32_t num_folder = arr.read_num_u32();
     _folders.resize(num_folder);
 
     uint8_t external = arr.read_uint8();
     if (external != 0) {
-        fmt::print("not supported feature\n");
+        fmt::print("Unsupported feature\n");
         return false;
     }
 
-    for (uint64_t i = 0; i < num_folder; i++) {
-        uint64_t num_coders = arr.read_number();
+    uint32_t packed_stream_index = 0;
+    for (uint32_t i = 0; i < num_folder; i++) {
+        uint8_t num_coders = arr.read_num_u8();
+        if (num_coders > MAX_NUM_CODERS) {
+            fmt::print("Too many coders ({}) in folder\n", num_coders);
+            return false;
+        }
         auto &f = _folders[i];
         f._coders.resize(num_coders);
         for (uint64_t j = 0; j < num_coders; j++) {
@@ -133,16 +187,22 @@ bool Archive::read_coders_info(ByteArray &arr)
             c._flag = arr.read_uint8();
             arr.read_bytes(c._id, c.id_size());
             if (c.is_complex_codec()) {
-                c._num_in_streams = arr.read_number();
-                c._num_out_streams = arr.read_number();
+                c._num_in_streams = arr.read_num_u8();
+                c._num_out_streams = arr.read_num_u8();
+                if (c._num_out_streams > 1) {
+                    fmt::print("Too many output streams ({}) in coder\n", c._num_out_streams);
+                    return false;
+                }
             } else {
                 c._num_in_streams = c._num_out_streams = 1;
             }
-            f._num_in_streams_total += c._num_in_streams;
-            f._num_out_streams_total += c._num_out_streams;
+            c._start_in_index = f._num_in_streams_total;
+            c._start_out_index = f._num_out_streams_total;
+            f._num_in_streams_total += (uint16_t)c._num_in_streams;
+            f._num_out_streams_total += (uint16_t)c._num_out_streams;
 
             if (c.has_attributes()) {
-                c._property_size = arr.read_number();
+                c._property_size = arr.read_num_u32();
                 c._property = new uint8_t[c._property_size];
                 // TODO implement memory allocator for small chunk (<32 bytes)
                 if (!c._property) {
@@ -151,34 +211,51 @@ bool Archive::read_coders_info(ByteArray &arr)
                 arr.read_bytes(c._property, c._property_size);
             }
         }
-        f._bind_pairs.resize(f._num_out_streams_total - 1);
-        for (auto it = f._bind_pairs.begin(); it != f._bind_pairs.end(); ++it) {
-            it->first = arr.read_number();
-            it->second = arr.read_number();
+        uint16_t num_bind_pairs = f._num_out_streams_total - 1;
+        if (f._num_in_streams_total < num_bind_pairs) {
+            fmt::print("Incorrect folder\n");
+            return false;
         }
-        if (f._num_in_streams_total > f._num_out_streams_total) {
-            f._packed_streams_index.resize(f._num_in_streams_total - f._num_out_streams_total + 1);
-            for (auto it = f._packed_streams_index.begin(); it != f._packed_streams_index.end(); ++it) {
-                *it = arr.read_number();
+        if (f._num_in_streams_total > MAX_NUM_STREAMS_FOLDER) {
+            fmt::print("Too many input streams ({}) in folder\n", f._num_in_streams_total);
+            return false;
+        }
+        if (num_bind_pairs != 0) {
+            f._bind_pairs.resize(num_bind_pairs);
+            for (uint16_t j = 0; j < num_bind_pairs; j++) {
+                f._bind_pairs[j].first = arr.read_num_u8();
+                f._bind_pairs[j].second = arr.read_num_u8();
             }
         }
-        f._unpack_size.resize(f._num_out_streams_total);
+        uint16_t num_packed_streams = f._num_in_streams_total - num_bind_pairs;
+        if (num_packed_streams != 1) {
+            f._packed_streams_index.resize(num_packed_streams);
+            for (uint16_t j = 0; j < num_packed_streams; j++) {
+                f._packed_streams_index[j] = arr.read_num_u32();
+            }
+        }
+        f._start_packed_stream_index = packed_stream_index;
+        if (num_packed_streams > _pack_size.size() - packed_stream_index) {
+            fmt::print("Too many packed streams in folder {}\n", i);
+            return false;
+        }
+        packed_stream_index += num_packed_streams;
     }
 
-    t = arr.read_number();
+    t = arr.read_uint8();
     if (t == Property::CODERS_UNPACK_SIZE) {
-        for (size_t i = 0; i < num_folder; i++) {
+        for (uint32_t i = 0; i < num_folder; i++) {
             auto &f = _folders[i];
-            for (uint64_t j = 0; j < f._num_out_streams_total; j++) {
-                f._unpack_size[j] = arr.read_number();
+            for (auto &c : f._coders) {
+                c._unpack_size = arr.read_number();
             }
         }
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     if (t == Property::CRC) {
         read_bitmap_digest(arr, num_folder, _unpack_digest);
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     assert(t == Property::END);
@@ -187,24 +264,24 @@ bool Archive::read_coders_info(ByteArray &arr)
 
 bool Archive::read_sub_streams_info(ByteArray &arr)
 {
-    uint64_t t = arr.read_uint8();
-    size_t num_folds = _folders.size();
+    uint8_t t = arr.read_uint8();
+    size_t num_folders = _folders.size();
     uint32_t num_digests = 0;
+    std::vector<uint32_t> num_unpack_streams(num_folders);
 
-    _num_unpack_streams.resize(num_folds);
-    _substream_sizes.resize(num_folds);
+    _substream_sizes.resize(num_folders);
 
     if (t == Property::NUM_UNPACK_STREAM) {
-        for (size_t i = 0; i < num_folds; i++) {
-            _num_unpack_streams[i] = arr.read_number();
-            num_digests += _num_unpack_streams[i];
+        for (size_t i = 0; i < num_folders; i++) {
+            num_unpack_streams[i] = arr.read_num_u32();
+            num_digests += num_unpack_streams[i];
         }
         t = arr.read_uint8();
     }
 
     if (t == Property::SIZE) {
-        for (size_t i = 0; i < num_folds; i++) {
-            size_t num = _num_unpack_streams[i];
+        for (size_t i = 0; i < num_folders; i++) {
+            size_t num = num_unpack_streams[i];
             uint32_t total_size = 0;
             auto& v = _substream_sizes[i];
 
@@ -214,8 +291,8 @@ bool Archive::read_sub_streams_info(ByteArray &arr)
                 total_size += v[j];
             }
 
-            assert(_folders[i]._unpack_size.back() > total_size);
-            v[num - 1] = _folders[i]._unpack_size.back() - total_size;
+            assert(_folders[i].get_unpack_size() > total_size);
+            v[num - 1] = _folders[i].get_unpack_size() - total_size;
         }
         t = arr.read_uint8();
     }
@@ -234,9 +311,10 @@ bool Archive::read_sub_streams_info(ByteArray &arr)
 
 bool Archive::read_files_info(ByteArray& arr)
 {
-    uint64_t num_files = arr.read_number();
+    uint32_t num_files = arr.read_num_u32();
     _files_info.resize(num_files);
-    uint64_t num_empty_streams = 0;
+    uint32_t num_empty_streams = 0;
+    std::map<uint32_t, uint32_t> m;
 
     while (true) {
         uint8_t t = arr.read_uint8();
@@ -246,6 +324,7 @@ bool Archive::read_files_info(ByteArray& arr)
 
         uint64_t size = arr.read_number();
         Bitmap bm;
+        uint8_t external;
 
         switch (t) {
         case Property::DUMMY:
@@ -253,34 +332,80 @@ bool Archive::read_files_info(ByteArray& arr)
             break;
         case Property::EMPTY_STREAM:
             if (!bm.init(num_files)) {
-                fmt::print("BitmapDigest.init() failed\n");
+                fmt::print("Bitmap.init({}) failed\n", num_files);
                 return false;
             }
             arr.read_bytes(bm._bitset, size);
-            for (uint64_t i = 0; i < num_files; i++) {
+            for (uint32_t i = 0; i < num_files; i++) {
                 if (bm.test(i)) {
-                    _files_info[i]._empty_stream = true;
+                    _files_info[i].set_empty_stream();
+                    m[num_empty_streams] = i;
                     num_empty_streams++;
                 }
             }
             break;
         case Property::EMPTY_FILE:
-            if (!_empty_files.init(num_empty_streams)) {
-                fmt::print("BitmapDigest.init() failed\n");
+            if (!bm.init(num_empty_streams)) {
+                fmt::print("Bitmap.init({}) failed\n", num_empty_streams);
                 return false;
             }
-            arr.read_bytes(_empty_files._bitset, size);
+            arr.read_bytes(bm._bitset, size);
+            for (uint32_t i = 0; i < num_empty_streams; i++) {
+                if (bm.test(i)) {
+                    uint32_t j = m[i];
+                    _files_info[j].set_empty_file();
+                    _files_info[j]._size = 0;
+                }
+            }
             break;
         case Property::ANTI:
-            fmt::print("Not Support PROPERTY::ANTI\n");
+            fmt::print("Unsupported PROPERTY::ANTI\n");
             break;
         case Property::NAME:
+            external = arr.read_uint8();
+            if (external) {
+                uint32_t index = arr.read_num_u32();
+                fmt::print("Unsupported external flag in FileName (dataindex {})\n", index);
+                return false;
+            }
+            --size;
+            if ((size & 1) != 0) {
+                fmt::print("Incorrect size in FileName which is {}\n", size);
+                return false;
+            }
+            for (uint32_t i = 0; i < num_files; i++) {
+                while (true) {
+                    uint16_t v = arr.read_uint16();
+                    _files_info[i]._name.push_back(v);
+                    if (v == 0) {
+                        break;
+                    }
+                }
+            }
             break;
         case Property::CREATION_TIME:
+            if (!read_times(arr, num_files, Property::CREATION_TIME)) {
+                fmt::print("read CREATION_TIME failed\n");
+                return false;
+            }
+            break;
         case Property::LAST_ACCESS_TIME:
+            if (!read_times(arr, num_files, Property::LAST_ACCESS_TIME)) {
+                fmt::print("read LAST_ACCESS_TIME failed\n");
+                return false;
+            }
+            break;
         case Property::LAST_WRITE_TIME:
+            if (!read_times(arr, num_files, Property::LAST_WRITE_TIME)) {
+                fmt::print("read LAST_WRITE_TIME failed\n");
+                return false;
+            }
             break;
         case Property::ATTRIBUTES:
+            if (!read_attrs(arr, num_files)) {
+                fmt::print("read ATTRIBUTES failed\n");
+                return false;
+            }
             break;
         default:
             fmt::print("unknown property {}\n", t);
@@ -292,14 +417,14 @@ bool Archive::read_files_info(ByteArray& arr)
 
 bool Archive::read_streams_info(ByteArray &arr)
 {
-    uint64_t t = arr.read_number();
+    uint8_t t = arr.read_uint8();
 
     if (t == Property::PACK_INFO) {
         if (!read_pack_info(arr)) {
             fmt::print("read_pack_info() failed\n");
             return false;
         }
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     if (t == Property::UNPACK_INFO) {
@@ -307,7 +432,7 @@ bool Archive::read_streams_info(ByteArray &arr)
             fmt::print("read_unpack_info() failed\n");
             return false;
         }
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     if (t == Property::SUBSTREAMS_INFO) {
@@ -315,7 +440,7 @@ bool Archive::read_streams_info(ByteArray &arr)
             fmt::print("read_substreams_info() failed\n");
             return false;
         }
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     assert(t == Property::END);
@@ -324,14 +449,26 @@ bool Archive::read_streams_info(ByteArray &arr)
 
 bool Archive::read_header(ByteArray &arr)
 {
-    uint64_t t = arr.read_number();
+    uint8_t t = arr.read_uint8();
+
+    // mostly unused now
+    if (t == Property::ARCHIVE_PROPERTIES) {
+        while (true) {
+            uint8_t type = arr.read_uint8();
+            if (type == Property::END) {
+                break;
+            }
+            arr.skip_data();
+        }
+        t = arr.read_uint8();
+    }
 
     if (t == Property::ADDITIONAL_STREAMS_INFO) {
         if (!read_additional_streams_info(arr)) {
             fmt::print("read_additional_streams_info() failed\n");
             return false;
         }
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     if (t == Property::MAIN_STREAMS_INFO) {
@@ -339,7 +476,7 @@ bool Archive::read_header(ByteArray &arr)
             fmt::print("read_main_streams_info() failed\n");
             return false;
         }
-        t = arr.read_number();
+        t = arr.read_uint8();
     }
 
     if (t == Property::FILES_INFO) {
@@ -347,9 +484,16 @@ bool Archive::read_header(ByteArray &arr)
             fmt::print("read_files_info() failed\n");
             return false;
         }
+        t = arr.read_uint8();
     }
 
     assert(t == Property::END);
+
+    if (!update_files_info()) {
+        fmt::print("update_files_info() failed\n");
+        return false;
+    }
+
     return true;
 }
 
@@ -373,8 +517,8 @@ void Archive::write_decompressed_header(uint8_t *buf, size_t buf_len)
 
     dummy.offset = _pack_pos;
     dummy.size = buf_len;
-    dummy.crc = calc_crc(buf, buf_len);
-    uint32_t start_hdr_crc = calc_crc(&dummy, 20);
+    dummy.crc = crc32(buf, buf_len);
+    uint32_t start_hdr_crc = crc32(&dummy, 20);
 
     if (fwrite(MAGIC_AND_VERSION, 1, 8, new_fp) != 8) {
         fmt::print("fwrite() failed 1\n");
@@ -431,7 +575,7 @@ uint8_t * Archive::decompress_header()
 {
     bool success = true;
     size_t src_len = _pack_size[0];
-    size_t dest_len = _folders[0]._unpack_size[0];
+    size_t dest_len = _folders[0].get_unpack_size();
 
     uint8_t *dest = new uint8_t[dest_len];
     if (!dest) {
@@ -506,7 +650,7 @@ bool Archive::read_archive()
 
     fread(buf, 1, _next_hdr_size, _fp);
     ByteArray arr(buf, _next_hdr_size, true);
-    uint64_t t = arr.read_number();
+    uint8_t t = arr.read_uint8();
 
     assert(t == Property::ENCODED_HEADER || t == Property::HEADER);
 
@@ -523,10 +667,12 @@ bool Archive::read_archive()
             return false;
         }
 
-        size_t new_size = _folders[0]._unpack_size[0];
+        size_t new_size = _folders[0].get_unpack_size();
         arr.replace(new_header, new_size, true);
 
-        write_decompressed_header(new_header, new_size);
+        if (_dump) {
+            write_decompressed_header(new_header, new_size);
+        }
 
         if (arr.read_number() != Property::HEADER) {
             fmt::print("unknown Property\n");
@@ -539,13 +685,114 @@ bool Archive::read_archive()
     return read_header(arr);
 }
 
-Archive::Archive(const std::string &s, uint32_t flags) : _name(s)
+bool Archive::read_times(ByteArray &arr, uint32_t num_files, uint8_t t)
+{
+    Bitmap bm(num_files);
+    uint8_t all_defined = arr.read_uint8();
+    if (!all_defined) {
+        arr.read_bytes(bm._bitset, bm._size);
+    } else {
+        bm.set_all();
+    }
+
+    uint8_t external = arr.read_uint8();
+    if (external) {
+        uint32_t index = arr.read_num_u32();
+        fmt::print("Unsupported external flag in type {} (DataIndex {})\n", t, index);
+        return false;
+    }
+
+    for (uint64_t i = 0; i < num_files; i++) {
+        if (bm.test(i)) {
+            uint64_t v = arr.read_uint64();
+            switch (t) {
+            case Property::CREATION_TIME:
+                _files_info[i]._ctime = v;
+                _files_info[i].set_ctime();
+                break;
+            case Property::LAST_ACCESS_TIME:
+                _files_info[i]._atime = v;
+                _files_info[i].set_atime();
+                break;
+            case Property::LAST_WRITE_TIME:
+                _files_info[i]._mtime = v;
+                _files_info[i].set_mtime();
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    return true;
+}
+
+bool Archive::read_attrs(ByteArray& arr, uint32_t num_files)
+{
+    Bitmap bm(num_files);
+    uint8_t all_defined = arr.read_uint8();
+    if (!all_defined) {
+        arr.read_bytes(bm._bitset, bm._size);
+    } else {
+        bm.set_all();
+    }
+
+    uint8_t external = arr.read_uint8();
+    if (external) {
+        uint32_t index = arr.read_num_u32();
+        fmt::print("Unsupported external flag in ATTIBUTES (DataIndex {})\n", index);
+        return false;
+    }
+
+    for (uint64_t i = 0; i < num_files; i++) {
+        if (bm.test(i)) {
+            uint32_t v = arr.read_uint32();
+            _files_info[i]._attribute = v;
+            _files_info[i].set_attribute();
+        }
+    }
+    return true;
+}
+
+bool Archive::update_files_info()
+{
+    auto it = _files_info.begin();
+    auto end = _files_info.end();
+    uint32_t num_folders = _folders.size();
+
+    for (uint32_t i = 0; i < num_folders; i++) {
+        auto &u = _substream_sizes[i];
+        uint32_t num_substreams = u.size();
+        for (uint32_t j = 0; j < num_substreams; j++) {
+            while (it->is_empty_stream()) {
+                ++it;
+            }
+            it->_folder = i;
+            it->_size = u[j];
+            ++it;
+        }
+    }
+    assert(it == end);
+
+    auto crc_it = _substreams_digest._crcs.cbegin();
+    for (it = _files_info.begin(); it != end; ++it) {
+        if (it->is_empty_stream()) {
+            continue;
+        }
+        it->_crc = *crc_it;
+        ++crc_it;
+    }
+    assert(crc_it == _substreams_digest._crcs.cend());
+
+    return true;
+}
+
+Archive::Archive(const std::string &s, uint32_t flags) : _name(s), _fp(nullptr), _dump(false)
 {
     std::string mode;
 
-    if (flags & F_WRITE) {
+    if (flags & A_F_WRITE) {
         mode = "wb";
-        if (flags & F_FORCE) {
+        if (flags & A_F_FORCE) {
             mode.push_back('+');
         }
         _start_hdr_crc = -1;
@@ -555,12 +802,17 @@ Archive::Archive(const std::string &s, uint32_t flags) : _name(s)
     } else {
         mode = "rb";
     }
+
+    if (flags & A_F_DUMP) {
+        _dump = true;
+    }
+
     _fp = fopen(s.c_str(), mode.c_str());
     if (!_fp) {
         throw fmt::system_error(errno, "{} ", s.c_str());
     }
 
-    if (flags & F_WRITE) {
+    if (flags & A_F_WRITE) {
         fwrite(MAGIC_AND_VERSION, 1, sizeof(MAGIC_AND_VERSION), _fp);
     } else {
         uint8_t buf[8];
