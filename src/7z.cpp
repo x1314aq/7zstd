@@ -6,6 +6,8 @@
 #include "fmt/format.h"
 #include "fmt/xchar.h"
 
+#include "mimalloc-new-delete.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #endif

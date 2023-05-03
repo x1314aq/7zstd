@@ -7,16 +7,18 @@ target("7zstd")
     set_languages("c11", "c++14")
     set_warnings("all")
     if is_plat("windows") then
-        add_links("libzstd_static")
+        add_links("libzstd_static", "mimalloc-static", "Advapi32")
         add_includedirs("C:/Users/sapphire/software/usr/include")
         if is_mode("debug") then
             add_linkdirs("C:/Users/sapphire/software/usr/lib/debug")
         else
+            add_cxxflags("/GL")
+            add_ldflags("/LTCG")
             add_linkdirs("C:/Users/sapphire/software/usr/lib/release")
         end
     else
         add_syslinks("pthread")
-        add_links("zstd")
+        add_links("zstd", "mimalloc")
         add_includedirs("/home/huawei/.local/include")
         add_linkdirs("/home/huawei/.local/lib")
     end

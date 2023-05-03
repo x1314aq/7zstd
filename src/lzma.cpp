@@ -3,18 +3,19 @@
 #include "Lzma2Dec.h"
 #include "Bcj2.h"
 #include "Bra.h"
+#include "mimalloc.h"
 
 namespace IMethod {
 static void *my_alloc(ISzAllocPtr _p, size_t size)
 {
     (void)_p;
-    return ::malloc(size);
+    return mi_malloc(size);
 }
 
 static void my_free(ISzAllocPtr _p, void *p)
 {
     (void)_p;
-    return ::free(p);
+    return mi_free(p);
 }
 
 const ISzAlloc g_alloc = {my_alloc, my_free};
