@@ -25,7 +25,34 @@ static std::string utf16_to_utf8(wchar_t *in)
     int size = WideCharToMultiByte(CP_UTF8, 0, in, -1, NULL, 0, NULL, NULL);
     std::string out(size, 0);
     WideCharToMultiByte(CP_UTF8, 0, in, -1, &out[0], size, NULL, NULL);
+    out.pop_back(); // remove trailling '\0'
     return out;
+}
+
+static bool ensure_dir_exists(const wchar_t *name)
+{
+    const wchar_t *p = name;
+    wchar_t tmp[MAX_PATH];
+    uint32_t i = 0;
+
+    while (*p != L'\0') {
+        if (*p != L'/') {
+            tmp[i++] = *p;
+        } else {
+            tmp[i] = L'\0';
+            if (CreateDirectoryW(tmp, nullptr) == FALSE) {
+                DWORD err = GetLastError();
+                if (err != ERROR_ALREADY_EXISTS) {
+                    fmt::print("CreateDirectoryW() failed {}\n", err);
+                    return false;
+                }
+            }
+            tmp[i++] = L'/';
+        }
+        ++p;
+    }
+
+    return true;
 }
 
 static bool process_empty_stream(const FileInfo &info)
@@ -38,6 +65,10 @@ static bool process_empty_stream(const FileInfo &info)
             return false;
         }
     } else {
+        if (!ensure_dir_exists(name)) {
+            fmt::print("ensure_dir_exists() failed\n");
+            return false;
+        }
         HANDLE h = CreateFileW(name, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, info._attribute, NULL);
         if (h == INVALID_HANDLE_VALUE) {
             fmt::print("CreateFileW() failed {}\n", GetLastError());
@@ -49,13 +80,21 @@ static bool process_empty_stream(const FileInfo &info)
     return true;
 }
 
-static bool write_file(const FileInfo &info, const uint8_t *buffer)
+static bool write_file(const FileInfo &info, const uint8_t *out)
 {
+    const uint8_t *buffer = out + info._offset;
     uint32_t crc = crc32(buffer, info._size);
-    assert(info._crc == crc);
+    if (info._crc != crc) {
+        fmt::print("incorrect crc32\n");
+        return false;
+    }
 
     wchar_t *name = (wchar_t *)info._name.data();
     fmt::print(L"- {}\n", name);
+    if (!ensure_dir_exists(name)) {
+        fmt::print("ensure_dir_exists() failed\n");
+        return false;
+    }
     HANDLE h = CreateFileW(name, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, info._attribute, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         fmt::print("CreateFileW() failed {}\n", GetLastError());
@@ -78,6 +117,134 @@ static bool write_file(const FileInfo &info, const uint8_t *buffer)
     return true;
 }
 
+static bool match(const std::string &name, std::vector<std::regex> &v)
+{
+    for (auto &r : v) {
+        if (std::regex_match(name, r)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool string_replace(std::string &str, const std::string &from, const std::string &to)
+{
+    std::size_t start_pos = str.find(from);
+    if (start_pos == std::string::npos)
+        return false;
+    str.replace(start_pos, from.length(), to);
+    return true;
+}
+
+static std::string translate(const std::string &pattern)
+{
+    std::size_t i = 0, n = pattern.size();
+    std::string result_string;
+
+    while (i < n) {
+        auto c = pattern[i];
+        i += 1;
+        if (c == '*') {
+            result_string += ".*";
+        } else if (c == '?') {
+            result_string += ".";
+        } else if (c == '[') {
+            auto j = i;
+            if (j < n && pattern[j] == '!') {
+                j += 1;
+            }
+            if (j < n && pattern[j] == ']') {
+                j += 1;
+            }
+            while (j < n && pattern[j] != ']') {
+                j += 1;
+            }
+            if (j >= n) {
+                result_string += "\\[";
+            } else {
+                auto stuff = std::string(pattern.begin() + i, pattern.begin() + j);
+                if (stuff.find("--") == std::string::npos) {
+                    string_replace(stuff, std::string{"\\"}, std::string{R"(\\)"});
+                } else {
+                    std::vector<std::string> chunks;
+                    std::size_t k = 0;
+                    if (pattern[i] == '!') {
+                        k = i + 2;
+                    } else {
+                        k = i + 1;
+                    }
+
+                    while (true) {
+                        k = pattern.find("-", k, j);
+                        if (k == std::string::npos) {
+                            break;
+                        }
+                        chunks.push_back(std::string(pattern.begin() + i, pattern.begin() + k));
+                        i = k + 1;
+                        k = k + 3;
+                    }
+
+                    chunks.push_back(std::string(pattern.begin() + i, pattern.begin() + j));
+                    // Escape backslashes and hyphens for set difference (--).
+                    // Hyphens that create ranges shouldn't be escaped.
+                    bool first = true;
+                    for (auto &s : chunks) {
+                        string_replace(s, std::string{"\\"}, std::string{R"(\\)"});
+                        string_replace(s, std::string{"-"}, std::string{R"(\-)"});
+                        if (first) {
+                            stuff += s;
+                            first = false;
+                        } else {
+                            stuff += "-" + s;
+                        }
+                    }
+                }
+
+                // Escape set operations (&&, ~~ and ||).
+                std::string result;
+                std::regex_replace(std::back_inserter(result),          // ressult
+                    stuff.begin(), stuff.end(),          // string
+                    std::regex(std::string{R"([&~|])"}), // pattern
+                    std::string{R"(\\\1)"});             // repl
+                stuff = result;
+                i = j + 1;
+                if (stuff[0] == '!') {
+                    stuff = "^" + std::string(stuff.begin() + 1, stuff.end());
+                } else if (stuff[0] == '^' || stuff[0] == '[') {
+                    stuff = "\\\\" + stuff;
+                }
+                result_string = result_string + "[" + stuff + "]";
+            }
+        } else {
+            // SPECIAL_CHARS
+            // closing ')', '}' and ']'
+            // '-' (a range in character set)
+            // '&', '~', (extended character set operations)
+            // '#' (comment) and WHITESPACE (ignored) in verbose mode
+            static std::string special_characters = "()[]{}?*+-|^$\\.&~# \t\n\r\v\f";
+            static std::map<int, std::string> special_characters_map;
+            if (special_characters_map.empty()) {
+                for (auto &sc : special_characters) {
+                    special_characters_map.insert(
+                        std::make_pair(static_cast<int>(sc), std::string{"\\"} + std::string(1, sc)));
+                }
+            }
+
+            if (special_characters.find(c) != std::string::npos) {
+                result_string += special_characters_map[static_cast<int>(c)];
+            } else {
+                result_string += c;
+            }
+        }
+    }
+    return std::string{"(("} + result_string + std::string{R"()|[\r\n])$)"};
+}
+
+static std::regex compile_pattern(const std::string &pattern)
+{
+    return std::regex(translate(pattern), std::regex::ECMAScript);
+}
+
 void Archive::ExtractAll()
 {
     auto it = _files_info.cbegin();
@@ -89,45 +256,70 @@ void Archive::ExtractAll()
         ++it;
     }
 
-    for (auto f = _folders.begin(); f != _folders.end(); ++f) {
-        size_t unpack_size = f->get_unpack_size();
-        size_t in_size = _pack_size[f->_start_packed_stream_index];
-        auto in = std::make_unique<uint8_t[]>(in_size);
-        off_t offset = SIGNATURE_HEADER_SIZE + _pack_pos;
-        for (uint32_t i = 0; i < _pack_size.size(); i++) {
-            if (i == f->_start_packed_stream_index) {
-                break;
-            }
-            offset += _pack_size[i];
-        }
-
-        fseek(_fp, offset, SEEK_SET);
-        fread(in.get(), in_size, 1, _fp);
-
-        auto out = std::make_unique<uint8_t[]>(unpack_size);
-        if (!f->decompress(in.get(), in_size, out.get(), unpack_size)) {
-            fmt::print("decompress folder failed\n");
+    uint32_t size = _folders.size();
+    for (uint32_t i = 0; i < size; i++) {
+        uint8_t *out = decompress_folder(i);
+        if (!out) {
+            fmt::print("decompress_folder() failed\n");
             return;
         }
 
-        size_t used = 0;
-        while (used < unpack_size) {
-            const uint8_t *p = out.get() + used;
-            if (!write_file(*it, p)) {
+        while (it->_folder == i) {
+            if (!write_file(*it, out)) {
                 fmt::print("write_file() failed\n");
                 return;
             }
-            used += it->_size;
             ++it;
         }
+
+        delete[] out;
     }
 
     assert(it == _files_info.cend());
 }
 
-bool Archive::ExtractFile(uint32_t index)
+bool Archive::ExtractFile(std::vector<std::string> &patterns)
 {
-    return false;
+    std::vector<std::regex> v;
+    uint8_t *out = nullptr;
+    uint32_t curr_folder = 0;
+    bool decompressed = false;
+
+    for (auto &p : patterns) {
+        v.push_back(compile_pattern(p));
+    }
+
+    for (auto it = _files_info.cbegin(); it != _files_info.cend(); ++it) {
+        auto name = utf16_to_utf8((wchar_t *)it->_name.data());
+        if (match(name, v)) {
+            if (it->is_empty_stream()) {
+                process_empty_stream(*it);
+            } else {
+                if (it->_folder != curr_folder) {
+                    if (decompressed) {
+                        delete[] out;
+                        decompressed = false;
+                    }
+                    curr_folder = it->_folder;
+                }
+
+                if (!decompressed) {
+                    out = decompress_folder(curr_folder);
+                    if (!out) {
+                        fmt::print("decompress_folder() failed\n");
+                        return false;
+                    }
+                    decompressed = true;
+                }
+
+                if (!write_file(*it, out)) {
+                    fmt::print("write_file() failed\n");
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
 }
 
 void Archive::ListFiles()
@@ -712,6 +904,44 @@ uint8_t * Archive::decompress_header()
     return dest;
 }
 
+uint8_t *Archive::decompress_folder(uint32_t index)
+{
+    auto &f = _folders[index];
+    size_t out_size = f.get_unpack_size();
+    size_t in_size = _pack_size[f._start_packed_stream_index];
+    uint8_t *in = new uint8_t[in_size];
+    if (!in) {
+        fmt::print("alloc failed\n");
+        return nullptr;
+    }
+    off_t offset = SIGNATURE_HEADER_SIZE + _pack_pos;
+    for (uint32_t i = 0; i < _pack_size.size(); i++) {
+        if (i == f._start_packed_stream_index) {
+            break;
+        }
+        offset += _pack_size[i];
+    }
+
+    fseek(_fp, offset, SEEK_SET);
+    fread(in, in_size, 1, _fp);
+
+    uint8_t *out = new uint8_t[out_size];
+    if (!out) {
+        fmt::print("alloc failed\n");
+        delete[] in;
+        return nullptr;
+    }
+    if (!f.decompress(in, in_size, out, out_size)) {
+        fmt::print("decompress folder failed\n");
+        delete[] in;
+        delete[] out;
+        return nullptr;
+    }
+
+    delete[] in;
+    return out;
+}
+
 void Archive::reset()
 {
     _pack_pos = 0;
@@ -852,6 +1082,7 @@ bool Archive::update_files_info()
     uint32_t num_folders = _folders.size();
 
     for (uint32_t i = 0; i < num_folders; i++) {
+        uint64_t offset = 0;
         auto &u = _substream_sizes[i];
         uint32_t num_substreams = u.size();
         for (uint32_t j = 0; j < num_substreams; j++) {
@@ -860,8 +1091,11 @@ bool Archive::update_files_info()
             }
             it->_folder = i;
             it->_size = u[j];
+            it->_offset = offset;
+            offset += u[j];
             ++it;
         }
+        assert(offset == _folders[i].get_unpack_size());
     }
     assert(it == end);
 

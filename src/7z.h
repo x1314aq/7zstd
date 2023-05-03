@@ -564,6 +564,7 @@ public:
     uint32_t _flags;
     uint32_t _crc;
     uint16_t _folder;
+    uint64_t _offset;
 };
 
 class Archive {
@@ -582,7 +583,7 @@ public:
 
     void ExtractAll();
 
-    bool ExtractFile(uint32_t index);
+    bool ExtractFile(std::vector<std::string> &patterns);
 
     void ListFiles();
 
@@ -620,6 +621,7 @@ private:
     }
 
     uint8_t *decompress_header();
+    uint8_t *decompress_folder(uint32_t index);
 
     void reset();
 
